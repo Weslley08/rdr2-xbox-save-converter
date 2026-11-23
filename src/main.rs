@@ -21,7 +21,7 @@ impl Default for ConverterApp {
             input_zip: String::new(),
             output_dir: String::new(),
             config_path: default_config_path().display().to_string(),
-            status: "选择 xbcsmgrrev 导出的 ZIP，然后先检查存档。程序完全离线运行。".into(),
+            status: "Selecione o ZIP exportado pelo xbcsmgrrev e clique em Analisar save. O programa funciona offline.".into(),
         }
     }
 }
@@ -29,7 +29,7 @@ impl Default for ConverterApp {
 impl ConverterApp {
     fn select_input(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("ZIP archive", &["zip"])
+            .add_filter("Arquivo ZIP", &["zip"])
             .pick_file()
         {
             self.input_zip = path.display().to_string();
@@ -47,7 +47,7 @@ impl ConverterApp {
 
     fn select_config(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("TOML config", &["toml"])
+            .add_filter("Configuracao TOML", &["toml"])
             .pick_file()
         {
             self.config_path = path.display().to_string();
@@ -58,25 +58,25 @@ impl ConverterApp {
         match create_config_template(Path::new(&self.config_path)) {
             Ok(()) => {
                 self.status = format!(
-                    "已创建配置模板：{}\n请按下方公开出处填写两把 key；不要把填好的文件上传。",
+                    "Modelo de configuracao criado em: {}\nPreencha as duas chaves AES consultando as fontes indicadas. Nao publique o arquivo preenchido.",
                     self.config_path
                 );
             }
-            Err(error) => self.status = format!("未创建配置：{error}"),
+            Err(error) => self.status = format!("Nao foi possivel criar a configuracao: {error}"),
         }
     }
 
     fn inspect(&mut self) {
         if self.input_zip.trim().is_empty() {
-            self.status = "请先选择输入 ZIP。".into();
+            self.status = "Selecione primeiro o arquivo ZIP do Xbox.".into();
             return;
         }
         match load_xbox_slots(Path::new(&self.input_zip)) {
             Ok(slots) => {
-                let mut lines = vec![format!("检查通过：找到 {} 个剧情存档。", slots.len())];
+                let mut lines = vec![format!("Analise concluida: {} saves do modo historia encontrados.", slots.len())];
                 for slot in slots {
                     lines.push(format!(
-                        "{} → {} | {} | {} bytes",
+                        "{} -> {} | {} | {} bytes",
                         slot.xbox_name,
                         slot.pc_name,
                         slot.title,
@@ -85,7 +85,7 @@ impl ConverterApp {
                 }
                 self.status = lines.join("\n");
             }
-            Err(error) => self.status = format!("检查失败：{error}"),
+            Err(error) => self.status = format!("Falha na analise: {error}"),
         }
     }
 
@@ -94,7 +94,7 @@ impl ConverterApp {
             || self.output_dir.trim().is_empty()
             || self.config_path.trim().is_empty()
         {
-            self.status = "输入 ZIP、输出目录和 key 配置路径都不能为空。".into();
+            self.status = "Informe o ZIP de entrada, a pasta de saida e o caminho do arquivo de chaves.".into();
             return;
         }
         match convert_archive(
@@ -104,12 +104,12 @@ impl ConverterApp {
         ) {
             Ok(manifest) => {
                 self.status = format!(
-                    "转换成功：{} 个 PC 存档已写入 {}\n每份均通过 RSAV、10 个 CHKS、Xbox/PC AES 往返及主体一致性检查。",
+                    "Conversao concluida: {} saves de PC gravados em {}\nValidacoes: RSAV, 10 CHKS, ciclo AES Xbox/PC e igualdade dos dados.",
                     manifest.len(),
                     self.output_dir
                 );
             }
-            Err(error) => self.status = format!("拒绝转换：{error}"),
+            Err(error) => self.status = format!("Conversao recusada: {error}"),
         }
     }
 }
@@ -117,8 +117,9 @@ impl ConverterApp {
 impl eframe::App for ConverterApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(context, |ui| {
-            ui.heading("RDR2 Xbox → PC 存档转换器");
-            ui.label("本地离线转换；不登录账号、不联网、不上传存档，也不在程序中内置游戏密钥。");
+            ui.heading("Conversor de saves RDR2 - Xbox para PC");
+            ui.label("Conversao offline. Nao exige login, nao envia saves e nao inclui chaves de criptografia.");
+            ui.label("Atencao: esta versao converte apenas Xbox para PC; nao permite importar saves no Xbox.");
             ui.add_space(10.0);
 
             egui::Grid::new("paths")
@@ -127,49 +128,49 @@ impl eframe::App for ConverterApp {
                 .show(ui, |ui| {
                     ui.label("Xbox ZIP");
                     ui.text_edit_singleline(&mut self.input_zip);
-                    if ui.button("选择…").clicked() {
+                    if ui.button("Procurar...").clicked() {
                         self.select_input();
                     }
                     ui.end_row();
 
-                    ui.label("输出目录");
+                    ui.label("Pasta de saida");
                     ui.text_edit_singleline(&mut self.output_dir);
-                    if ui.button("选择父目录…").clicked() {
+                    if ui.button("Selecionar pasta...").clicked() {
                         self.select_output_parent();
                     }
                     ui.end_row();
 
-                    ui.label("key 配置");
+                    ui.label("Arquivo de chaves");
                     ui.text_edit_singleline(&mut self.config_path);
-                    if ui.button("选择…").clicked() {
+                    if ui.button("Procurar...").clicked() {
                         self.select_config();
                     }
                     ui.end_row();
                 });
 
             ui.horizontal(|ui| {
-                if ui.button("创建空白配置模板").clicked() {
+                if ui.button("Criar modelo de chaves").clicked() {
                     self.create_template();
                 }
-                if ui.button("检查存档").clicked() {
+                if ui.button("Analisar save").clicked() {
                     self.inspect();
                 }
-                if ui.button("转换并严格验证").clicked() {
+                if ui.button("Converter e validar").clicked() {
                     self.convert();
                 }
             });
 
             ui.separator();
-            ui.label("密钥公开出处（链接页面中查找指定字段；本项目不复制 key）：");
+            ui.label("Fontes publicas das chaves (localize os campos indicados; nenhuma chave esta embutida):");
             ui.horizontal_wrapped(|ui| {
-                ui.label("Xbox：2013 帖子中的 GTAV= 行");
-                ui.hyperlink_to("打开来源", XBOX_KEY_SOURCE);
-                ui.label("　PC：源码中的 PC_KEY");
-                ui.hyperlink_to("打开来源", PC_KEY_SOURCE);
+                ui.label("Xbox: campo GTAV= no post de 2013");
+                ui.hyperlink_to("Abrir fonte", XBOX_KEY_SOURCE);
+                ui.label("  PC: campo PC_KEY no codigo-fonte");
+                ui.hyperlink_to("Abrir fonte", PC_KEY_SOURCE);
             });
 
             ui.separator();
-            ui.label("状态");
+            ui.label("Status");
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .max_height(300.0)
@@ -181,7 +182,7 @@ impl eframe::App for ConverterApp {
                     );
                 });
             ui.add_space(6.0);
-            ui.small("安全策略：输出目录必须不存在，源 ZIP 永不修改；任何结构、校验或往返失败都会停止且不生成最终目录。");
+            ui.small("Seguranca: a pasta de saida nao pode existir. O ZIP original nao e modificado. Falhas de estrutura ou validacao interrompem a conversao.");
         });
     }
 }
@@ -223,7 +224,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "RDR2 Xbox Save Converter",
+        "Conversor de Saves RDR2 - Xbox para PC",
         options,
         Box::new(|_creation_context| Ok(Box::<ConverterApp>::default())),
     )
