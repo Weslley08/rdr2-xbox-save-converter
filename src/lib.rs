@@ -626,6 +626,139 @@ pub fn convert_archive(
     result
 }
 
+/// Offline-only prototype: builds Xbox-shaped save atoms from a PC story save.
+/// This does not provide a Connected Storage write capability or prove Xbox acceptance.
+/// The supplied Xbox header must come from a genuine save owned by the user.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OfflineXboxManifest {
+    pub source_pc_file: String,
+    pub slot: String,
+    pub title: String,
+    pub source_pc_sha256: String,
+    pub xbox_data_sha256: String,
+    pub xbox_data_size: usize,
+    pub rsav_checksums: usize,
+    pub offline_only: bool,
+}
+
+fn validate_pc_slot_name(pc_path: &Path) -> Result<String> {
+    let name = pc_path.file_name()
+        .and_then(|part| part.to_str())
+        .ok_or_else(|| ConvertError::Message("PC save filename is not valid UTF-8".into()))?;
+    if name.len() != 9 || !name.starts_with("SRDR3")
+        || !name[5..].bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return fail("expected a PC story save named SRDR3 followed by four digits");
+    }
+    Ok(name.into())
+}
+
+fn build_xbox_header_from_template(
+    template: &[u8],
+    data_size: usize,
+    title: &str,
+    timestamp: u32,
+) -> Result<Vec<u8>> {
+    if template.len() != XBOX_HEADER_SIZE || read_u32_le(template, 0)? != XBOX_HEADER_VERSION {
+        return fail("invalid Xbox Save Game Header template: expected 280 bytes, version 5");
+    }
+    let original_size = read_u32_le(template, 4)? as usize;
+    if original_size == 0 || original_size % 16 != 0 {
+        return fail("Xbox header template has an invalid original data size");
+    }
+    if data_size == 0 || data_size % 16 != 0 || data_size > u32::MAX as usize {
+        return fail("invalid encrypted Xbox save size");
+    }
+    if title.trim().is_empty() {
+        return fail("PC story save title is empty");
+    }
+    // Preserve fields whose format has not been independently established.
+    // Only replace data length, timestamp and the UTF-16LE title.
+    let mut header = template.to_vec();
+    header[4..8].copy_from_slice(&(data_size as u32).to_le_bytes());
+    header[0x10..0x14].copy_from_slice(&timestamp.to_le_bytes());
+    header[0x18..0x118].copy_from_slice(&encode_utf16le_field(title, 0x100));
+    Ok(header)
+}
+
+pub fn convert_pc_to_xbox_offline(
+    pc_path: &Path,
+    xbox_header_template_path: &Path,
+    output_dir: &Path,
+    config_path: &Path,
+) -> Result<OfflineXboxManifest> {
+    let slot = validate_pc_slot_name(pc_path)?;
+    let config = KeyConfig::load(config_path)?;
+    let (xbox_key, pc_key) = config.keys()?;
+    // Bound input sizes, avoid processing excessively large or malformed files.
+    if fs::metadata(pc_path)?.len() > MAX_ARCHIVE_UNCOMPRESSED {
+        return fail("PC save exceeds 256 MiB");
+    }
+    let pc_file = fs::read(pc_path)?;
+    let pc_validation = validate_pc_file(&pc_file, &pc_key)?;
+    let payload = aes_ecb(&pc_file[PC_HEADER_SIZE..], &pc_key, false)?;
+    if aes_ecb(&payload, &pc_key, true)? != pc_file[PC_HEADER_SIZE..] {
+        return fail("PC encrypted payload failed round-trip verification");
+    }
+
+    let title = decode_utf16le_field(&pc_file[4..0x104])?;
+    let timestamp = read_u32_be(&pc_file, 0x104)?;
+    let template = fs::read(xbox_header_template_path)?;
+    let xbox_data = aes_ecb(&payload, &xbox_key, true)?;
+    let xbox_header = build_xbox_header_from_template(
+        &template, xbox_data.len(), &title, timestamp,
+    )?;
+
+    if aes_ecb(&xbox_data, &xbox_key, false)? != payload {
+        return fail("Xbox encrypted payload failed round-trip verification");
+    }
+    if validate_rsav(&aes_ecb(&xbox_data, &xbox_key, false)?)? != pc_validation {
+        return fail("Xbox RSAV validation differs from the PC source");
+    }
+    if read_u32_le(&xbox_header, 4)? as usize != xbox_data.len() {
+        return fail("generated Xbox header/data lengths do not match");
+    }
+
+    if output_dir.exists() {
+        return fail(format!("refusing to overwrite existing directory: {}", output_dir.display()));
+    }
+    let parent = output_dir.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let leaf = output_dir.file_name().and_then(|name| name.to_str()).unwrap_or("offline_xbox_atoms");
+    let temporary = parent.join(format!(".{leaf}.{}.tmp", std::process::id()));
+    if temporary.exists() {
+        return fail(format!("temporary output already exists: {}", temporary.display()));
+    }
+    let manifest = OfflineXboxManifest {
+        source_pc_file: slot.clone(),
+        slot: slot.clone(),
+        title,
+        source_pc_sha256: sha256_hex(&pc_file),
+        xbox_data_sha256: sha256_hex(&xbox_data),
+        xbox_data_size: xbox_data.len(),
+        rsav_checksums: pc_validation.checksum_count,
+        offline_only: true,
+    };
+    fs::create_dir(&temporary)?;
+    let result = (|| -> Result<()> {
+        let slot_dir = temporary.join(&slot);
+        fs::create_dir(&slot_dir)?;
+        fs::write(slot_dir.join("Save Game Data"), &xbox_data)?;
+        fs::write(slot_dir.join("Save Game Header"), &xbox_header)?;
+        fs::write(
+            temporary.join("offline_conversion_manifest.json"),
+            serde_json::to_string_pretty(&manifest)? + "\n",
+        )?;
+        fs::rename(&temporary, output_dir)?;
+        Ok(())
+    })();
+    if result.is_err() && temporary.exists() {
+        let _ = fs::remove_dir_all(&temporary);
+    }
+    result?;
+    Ok(manifest)
+}
+
 pub fn default_config_path() -> PathBuf {
     if let Ok(executable) = std::env::current_exe()
         && let Some(parent) = executable.parent()
@@ -657,6 +790,40 @@ mod tests {
         assert!(parse_key("test", "").is_err());
         assert!(parse_key("test", "0011").is_err());
         assert!(parse_key("test", &"00".repeat(32)).is_ok());
+    }
+
+    #[test]
+    fn xbox_header_from_template_preserves_unknown_fields() {
+        let mut template = vec![0_u8; XBOX_HEADER_SIZE];
+        template[..4].copy_from_slice(&XBOX_HEADER_VERSION.to_le_bytes());
+        template[4..8].copy_from_slice(&160_u32.to_le_bytes());
+        template[8..16].fill(0xA5);
+        template[0x14..0x18].fill(0x5A);
+        let generated = build_xbox_header_from_template(&template, 256, "Test save", 12345).unwrap();
+        assert_eq!(read_u32_le(&generated, 0).unwrap(), 5);
+        assert_eq!(read_u32_le(&generated, 4).unwrap(), 256);
+        assert_eq!(read_u32_le(&generated, 0x10).unwrap(), 12345);
+        assert_eq!(&generated[8..16], &[0xA5; 8]);
+        assert_eq!(&generated[0x14..0x18], &[0x5A; 4]);
+        assert_eq!(decode_utf16le_field(&generated[0x18..0x118]).unwrap(), "Test save");
+        assert_eq!(&template[4..8], &160_u32.to_le_bytes()); // input is never modified
+    }
+
+    #[test]
+    fn invalid_xbox_header_templates_are_rejected() {
+        assert!(build_xbox_header_from_template(&[], 64, "Valid", 0).is_err());
+        let mut template = vec![0_u8; XBOX_HEADER_SIZE];
+        template[..4].copy_from_slice(&XBOX_HEADER_VERSION.to_le_bytes());
+        template[4..8].copy_from_slice(&16_u32.to_le_bytes());
+        assert!(build_xbox_header_from_template(&template, 15, "Valid", 0).is_err());
+        assert!(build_xbox_header_from_template(&template, 64, "", 0).is_err());
+    }
+
+    #[test]
+    fn pc_slot_filename_validation_is_strict() {
+        assert_eq!(validate_pc_slot_name(Path::new("SRDR30015")).unwrap(), "SRDR30015");
+        assert!(validate_pc_slot_name(Path::new("SRDR30015.exe")).is_err());
+        assert!(validate_pc_slot_name(Path::new("SRDR3001")).is_err());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use eframe::egui;
 use rdr2_xbox_save_converter::{
-    convert_archive, create_config_template, default_config_path, load_xbox_slots,
+    convert_archive, convert_pc_to_xbox_offline, create_config_template, default_config_path, load_xbox_slots,
 };
 use std::path::Path;
 
@@ -11,6 +11,9 @@ const PC_KEY_SOURCE: &str = "https://github.com/hzhreal/HTOS/blob/31fca60508251e
 struct ConverterApp {
     input_zip: String,
     output_dir: String,
+    pc_input_file: String,
+    xbox_header_template: String,
+    xbox_output_dir: String,
     config_path: String,
     status: String,
 }
@@ -20,6 +23,9 @@ impl Default for ConverterApp {
         Self {
             input_zip: String::new(),
             output_dir: String::new(),
+            pc_input_file: String::new(),
+            xbox_header_template: String::new(),
+            xbox_output_dir: String::new(),
             config_path: default_config_path().display().to_string(),
             status: "Selecione o ZIP exportado pelo xbcsmgrrev e clique em Analisar save. O programa funciona offline.".into(),
         }
@@ -51,6 +57,62 @@ impl ConverterApp {
             .pick_file()
         {
             self.config_path = path.display().to_string();
+        }
+    }
+
+
+    fn select_pc_input(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .set_title("Selecione um save PC SRDR3xxxx")
+            .pick_file()
+        {
+            self.pc_input_file = path.display().to_string();
+            if let Some(parent) = path.parent() {
+                self.xbox_output_dir = parent.join("offline_xbox_atoms").display().to_string();
+            }
+        }
+    }
+
+    fn select_xbox_template(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .set_title("Selecione o Save Game Header do backup Xbox")
+            .pick_file()
+        {
+            self.xbox_header_template = path.display().to_string();
+        }
+    }
+
+    fn select_xbox_output_parent(&mut self) {
+        if let Some(parent) = rfd::FileDialog::new()
+            .set_title("Selecione a pasta onde criar offline_xbox_atoms")
+            .pick_folder()
+        {
+            self.xbox_output_dir = parent.join("offline_xbox_atoms").display().to_string();
+        }
+    }
+
+    fn convert_pc_offline(&mut self) {
+        if self.pc_input_file.trim().is_empty()
+            || self.xbox_header_template.trim().is_empty()
+            || self.xbox_output_dir.trim().is_empty()
+            || self.config_path.trim().is_empty()
+        {
+            self.status = "Informe o save PC, o Save Game Header do Xbox, a pasta de saida e o arquivo de chaves.".into();
+            return;
+        }
+        match convert_pc_to_xbox_offline(
+            Path::new(&self.pc_input_file),
+            Path::new(&self.xbox_header_template),
+            Path::new(&self.xbox_output_dir),
+            Path::new(&self.config_path),
+        ) {
+            Ok(manifest) => {
+                self.status = format!(
+                    "Prototipo OFFLINE gerado: {} ({} bytes).\nArquivos em: {}\nEste aplicativo NAO envia saves para o Xbox e nao garante compatibilidade com o console.",
+                    manifest.slot, manifest.xbox_data_size, self.xbox_output_dir
+                );
+            }
+            Err(error) => self.status = format!("Conversao experimental recusada: {error}"),
         }
     }
 
@@ -117,10 +179,15 @@ impl ConverterApp {
 impl eframe::App for ConverterApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(context, |ui| {
-            ui.heading("Conversor de saves RDR2 - Xbox para PC");
+            ui.heading("Conversor de saves RDR2 - Xbox / PC");
             ui.label("Conversao offline. Nao exige login, nao envia saves e nao inclui chaves de criptografia.");
-            ui.label("Atencao: esta versao converte apenas Xbox para PC; nao permite importar saves no Xbox.");
+            ui.label("Xbox -> PC: conversao validada. PC -> Xbox: prototipo experimental offline, sem acesso a nuvem Xbox.");
             ui.add_space(10.0);
+
+
+            ui.separator();
+            ui.heading("Xbox -> PC");
+            ui.label("Importe o ZIP exportado pelo xbcsmgrrev.");
 
             egui::Grid::new("paths")
                 .num_columns(3)
@@ -160,6 +227,40 @@ impl eframe::App for ConverterApp {
                 }
             });
 
+
+            ui.separator();
+            ui.heading("PC -> Xbox (prototipo offline)");
+            ui.label("Gera arquivos de estudo em uma nova pasta; NAO envia ou instala saves no Xbox Series S.");
+            ui.label("Use uma copia do save PC SRDR3xxxx e o arquivo Save Game Header original do seu backup Xbox.");
+            egui::Grid::new("pc_to_xbox_paths")
+                .num_columns(3)
+                .spacing([8.0, 8.0])
+                .show(ui, |ui| {
+                    ui.label("Save PC");
+                    ui.text_edit_singleline(&mut self.pc_input_file);
+                    if ui.button("Escolher save...").clicked() {
+                        self.select_pc_input();
+                    }
+                    ui.end_row();
+
+                    ui.label("Header Xbox");
+                    ui.text_edit_singleline(&mut self.xbox_header_template);
+                    if ui.button("Escolher header...").clicked() {
+                        self.select_xbox_template();
+                    }
+                    ui.end_row();
+
+                    ui.label("Saida offline");
+                    ui.text_edit_singleline(&mut self.xbox_output_dir);
+                    if ui.button("Escolher destino...").clicked() {
+                        self.select_xbox_output_parent();
+                    }
+                    ui.end_row();
+                });
+            if ui.button("Gerar prototipo Xbox (offline)").clicked() {
+                self.convert_pc_offline();
+            }
+
             ui.separator();
             ui.label("Fontes publicas das chaves (localize os campos indicados; nenhuma chave esta embutida):");
             ui.horizontal_wrapped(|ui| {
@@ -188,6 +289,30 @@ impl eframe::App for ConverterApp {
 }
 
 fn run_cli(arguments: &[String]) -> Option<i32> {
+    if arguments.first().map(String::as_str) == Some("--pc-to-xbox-offline") {
+        if arguments.len() != 5 {
+            eprintln!("usage: rdr2-xbox-save-converter --pc-to-xbox-offline PC_SAVE XBOX_HEADER_TEMPLATE OUTPUT_DIR KEYS.toml");
+            return Some(2);
+        }
+        return Some(match convert_pc_to_xbox_offline(
+            Path::new(&arguments[1]),
+            Path::new(&arguments[2]),
+            Path::new(&arguments[3]),
+            Path::new(&arguments[4]),
+        ) {
+            Ok(manifest) => {
+                println!(
+                    "OFFLINE prototype generated for {} ({} bytes). No Xbox cloud upload is provided.",
+                    manifest.slot, manifest.xbox_data_size
+                );
+                0
+            }
+            Err(error) => {
+                eprintln!("offline PC-to-Xbox conversion refused: {error}");
+                2
+            }
+        });
+    }
     if arguments.first().map(String::as_str) != Some("--convert") {
         return None;
     }
@@ -224,7 +349,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "Conversor de Saves RDR2 - Xbox para PC",
+        "Conversor de Saves RDR2 - Xbox / PC",
         options,
         Box::new(|_creation_context| Ok(Box::<ConverterApp>::default())),
     )
