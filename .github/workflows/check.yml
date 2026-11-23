@@ -1,5 +1,5 @@
 name: check
-# Validate Rust tests and publish an isolated Windows build artifact.
+# Test and package the Windows executable. macOS release builds remain in release.yml.
 
 on:
   push:
@@ -11,12 +11,8 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-14, windows-2022]
-    runs-on: ${{ matrix.os }}
+  windows:
+    runs-on: windows-2022
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
@@ -27,11 +23,10 @@ jobs:
       - name: Run Rust tests
         run: cargo test --locked
       - name: Build Windows release
-        if: runner.os == 'Windows'
         run: cargo build --release --locked
 
       - name: Prepare Windows artifact with SHA-256
-        if: runner.os == 'Windows' && github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -50,7 +45,7 @@ jobs:
           Write-Host "Release SHA-256: $hash"
 
       - name: Upload Windows artifact (no saves or keys)
-        if: runner.os == 'Windows' && github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v6
         with:
           name: rdr2-xbox-save-converter-windows-x64
