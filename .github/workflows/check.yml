@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -11,11 +12,19 @@ permissions:
 jobs:
   test:
     strategy:
+      fail-fast: false
       matrix:
-        os: [macos-14, windows-latest]
+        os: [macos-14, windows-2022]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - name: Select stable Rust
         run: rustup default stable
-      - run: cargo test --locked
+      - name: Run Rust tests
+        run: cargo test --locked
+      - name: Build Windows release (validation only)
+        if: runner.os == 'Windows'
+        run: cargo build --release --locked
