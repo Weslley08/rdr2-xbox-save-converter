@@ -1,4 +1,5 @@
 name: check
+# Validate Rust tests and a Windows release build on GitHub-hosted runners.
 
 on:
   push:
