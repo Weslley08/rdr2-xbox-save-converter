@@ -1,6 +1,6 @@
 use eframe::egui;
 use rdr2_xbox_save_converter::{
-    convert_archive, create_config_template, default_config_path, load_xbox_slots,
+    convert_archive, convert_pc_to_xbox_offline, create_config_template, default_config_path, load_xbox_slots,
 };
 use std::path::Path;
 
@@ -188,6 +188,30 @@ impl eframe::App for ConverterApp {
 }
 
 fn run_cli(arguments: &[String]) -> Option<i32> {
+    if arguments.first().map(String::as_str) == Some("--pc-to-xbox-offline") {
+        if arguments.len() != 5 {
+            eprintln!("usage: rdr2-xbox-save-converter --pc-to-xbox-offline PC_SAVE XBOX_HEADER_TEMPLATE OUTPUT_DIR KEYS.toml");
+            return Some(2);
+        }
+        return Some(match convert_pc_to_xbox_offline(
+            Path::new(&arguments[1]),
+            Path::new(&arguments[2]),
+            Path::new(&arguments[3]),
+            Path::new(&arguments[4]),
+        ) {
+            Ok(manifest) => {
+                println!(
+                    "OFFLINE prototype generated for {} ({} bytes). No Xbox cloud upload is provided.",
+                    manifest.slot, manifest.xbox_data_size
+                );
+                0
+            }
+            Err(error) => {
+                eprintln!("offline PC-to-Xbox conversion refused: {error}");
+                2
+            }
+        });
+    }
     if arguments.first().map(String::as_str) != Some("--convert") {
         return None;
     }
