@@ -1,5 +1,5 @@
 name: check
-# Validate Rust tests and a Windows release build on GitHub-hosted runners.
+# Validate Rust tests and publish an isolated Windows build artifact.
 
 on:
   push:
@@ -26,6 +26,34 @@ jobs:
         run: rustup default stable
       - name: Run Rust tests
         run: cargo test --locked
-      - name: Build Windows release (validation only)
+      - name: Build Windows release
         if: runner.os == 'Windows'
         run: cargo build --release --locked
+
+      - name: Prepare Windows artifact with SHA-256
+        if: runner.os == 'Windows' && github.event_name != 'pull_request'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = 'target/release/rdr2-xbox-save-converter.exe'
+          if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+            throw "Expected release executable is missing: $exe"
+          }
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          Copy-Item -LiteralPath $exe -Destination dist/
+          Copy-Item -LiteralPath README.md -Destination dist/
+          Copy-Item -LiteralPath LICENSE -Destination dist/
+          Copy-Item -LiteralPath keys.example.toml -Destination dist/
+          $hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  rdr2-xbox-save-converter.exe" |
+            Set-Content -Path dist/SHA256SUMS.txt -Encoding ascii
+          Write-Host "Release SHA-256: $hash"
+
+      - name: Upload Windows artifact (no saves or keys)
+        if: runner.os == 'Windows' && github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v6
+        with:
+          name: rdr2-xbox-save-converter-windows-x64
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
